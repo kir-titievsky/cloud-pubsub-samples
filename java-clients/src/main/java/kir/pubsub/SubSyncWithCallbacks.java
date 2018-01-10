@@ -56,6 +56,7 @@ public class SubSyncWithCallbacks{
         final int pullIntervalSeconds = Integer.parseInt(args[2]);
         final int numThreads = Integer.parseInt(args[3]);
         final int timeoutMilliseconds = Integer.parseInt(args[4]);
+        final boolean DEBUG = Boolean.FALSE;
 
 
         // Messages are processed in two stages. Once we receive a message
@@ -67,6 +68,7 @@ public class SubSyncWithCallbacks{
         // from both sets.  Practically, the sets contain ackIds rather than messages themselves.
         final Set<String> toAck = ConcurrentHashMap.newKeySet();
         final Set<String> toModAck = ConcurrentHashMap.newKeySet();
+        final ConcurrentHashMap<String, String> acksToMids = new ConcurrentHashMap();
 
         int sendAckPeriodSeconds = 1;
 
@@ -77,9 +79,9 @@ public class SubSyncWithCallbacks{
         // by some amount that is ideally the amount of time required to finish processing the message and
         // successfully send the ack request and for it to be received by Pub/Sub.
         // We estimate this number here.  This can be optimized quite a bit.
-        int ackDeadlineSecondsIncrement = Math.min(Math.max(10, timeoutMilliseconds/1000*2), 10*60*60);
+        int ackDeadlineSecondsIncrement = 40; //Math.min(Math.max(10, timeoutMilliseconds/1000*2), 10*60*60);
         // We send modAck requests no more frequently than 1/second
-        int sendModAckPeriodSeconds = Math.max(1, ackDeadlineSecondsIncrement/2);
+        int sendModAckPeriodSeconds = 30;
 
         // Worker pool for processing messages. We should not pull more messages than available threads.
         // The listening decorator simplifies handling of callbacks when messages are processed.
@@ -126,6 +128,7 @@ public class SubSyncWithCallbacks{
                         workerPool.submit(new MessageHandler(message.getMessage(), timeoutMilliseconds));
                 final String ackId = message.getAckId();
                 toModAck.add(ackId);
+                acksToMids.put(ackId,message.getMessage().getMessageId());
                 Futures.addCallback(future, new FutureCallback<String>() {
                     public void onSuccess(String message_id) {
                         toAck.add(ackId);
@@ -136,6 +139,10 @@ public class SubSyncWithCallbacks{
                         thrown.printStackTrace();
                     }
                 });
+                if (DEBUG) {
+                    System.out.println("PULL for message_id " + acksToMids.get(ackId) + " with ackId ..."
+                            + ackId.substring(ackId.length() - 12, ackId.length() - 1));
+                }
             }
         },0,pullIntervalSeconds, SECONDS);
 
@@ -146,14 +153,19 @@ public class SubSyncWithCallbacks{
                 for (List<String> ackIds : Iterables.partition(toModAck, 1000)) {
                     subscriber.modifyAckDeadlineCallable().
                             call(modAckRequestBuilder.addAllAckIds(ackIds).build());
-                    System.out.println("Sent " + toModAck.size() + " modAcks.");
+                    if (DEBUG) {
+                        for (String i : toModAck) {
+                            System.out.println(
+                                    "ModAck for message_id " + acksToMids.get(i) + " with ackId ..."
+                                            + i.substring(i.length() - 12, i.length() - 1));
+                        }
+                    }
                 }
             }
         }, sendModAckPeriodSeconds/2, sendModAckPeriodSeconds,SECONDS);
 
         // schedule sending of outstanding acks for messages already processed
         servicePool.scheduleWithFixedDelay(() -> {
-            // TODO: Handle cases with more than 1000 Acks to send -- we don't allow batches larger than that
             // this may fail, but that's OK, the message will simply get re-delivered otherwise
             if (! toAck.isEmpty()) {
                 HashSet<String> localAckList = new HashSet<>(toAck);
@@ -164,7 +176,12 @@ public class SubSyncWithCallbacks{
                     toAck.removeAll(ackIds);
                     // it is now safe to stop extending ackDeadlines for the acked messages
                     toModAck.removeAll(ackIds);
-                    System.out.println("Sent " + localAckList.size() + " acks.");
+                    if (DEBUG) {
+                        for (String i : ackIds) {
+                            System.out.println(
+                                    "Ack for message_id " + acksToMids.get(i) + " with ackId ..." + i.substring(i.length() - 12, i.length() - 1));
+                        }
+                    }
                 }
             }
         }, 0, sendAckPeriodSeconds,SECONDS);
