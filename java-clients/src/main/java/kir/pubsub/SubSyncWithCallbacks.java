@@ -10,6 +10,7 @@ import org.threeten.bp.Duration;
 
 
 import java.io.IOException;
+import java.text.SimpleDateFormat;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -56,7 +57,7 @@ public class SubSyncWithCallbacks{
         final int pullIntervalSeconds = Integer.parseInt(args[2]);
         final int numThreads = Integer.parseInt(args[3]);
         final int timeoutMilliseconds = Integer.parseInt(args[4]);
-        final boolean DEBUG = Boolean.FALSE;
+        final boolean DEBUG = Boolean.TRUE;
 
 
         // Messages are processed in two stages. Once we receive a message
@@ -92,15 +93,6 @@ public class SubSyncWithCallbacks{
 
         // create constant bits of request bodies used for pull, ack, and modAckRequests
         String subName = SubscriptionName.of(projectId, subscriptionId).toString();
-        PullRequest.Builder pullRequestBuilder =
-                PullRequest.newBuilder()
-                        .setReturnImmediately(Boolean.FALSE)
-                        .setSubscription(subName);
-        ModifyAckDeadlineRequest.Builder modAckRequestBuilder = ModifyAckDeadlineRequest.newBuilder()
-                .setAckDeadlineSeconds(ackDeadlineSecondsIncrement)
-                .setSubscription(subName);
-        AcknowledgeRequest.Builder ackRequestBuilder = AcknowledgeRequest.newBuilder()
-                .setSubscription(subName);
 
         // now build a pub/sub client that can send these request objects and retrieve results.
         GrpcSubscriberStub subscriber = buildSubscriberStub(maxRpcSeconds);
@@ -121,7 +113,11 @@ public class SubSyncWithCallbacks{
             }
             // grab up to as many messages as there are free threads in the worker pool
             PullResponse pullResponse = subscriber.pullCallable().call(
-                    pullRequestBuilder.setMaxMessages(numThreads - toModAck.size()).build());
+                    PullRequest.newBuilder()
+                            .setReturnImmediately(Boolean.FALSE)
+                            .setSubscription(subName)
+                            .setMaxMessages(numThreads - toModAck.size()).build()
+            );
             for (ReceivedMessage message : pullResponse.getReceivedMessagesList()) {
                 // we keep track of message processing in an array message id
                 ListenableFuture<String> future =
@@ -151,14 +147,19 @@ public class SubSyncWithCallbacks{
             // this may fail, but that's OK, the message will simply get re-delivered otherwise
             if (! toModAck.isEmpty()) {
                 for (List<String> ackIds : Iterables.partition(toModAck, 1000)) {
-                    subscriber.modifyAckDeadlineCallable().
-                            call(modAckRequestBuilder.addAllAckIds(ackIds).build());
-                    if (DEBUG) {
-                        for (String i : toModAck) {
-                            System.out.println(
-                                    "ModAck for message_id " + acksToMids.get(i) + " with ackId ..."
-                                            + i.substring(i.length() - 12, i.length() - 1));
-                        }
+                    subscriber.modifyAckDeadlineCallable().call(
+                            ModifyAckDeadlineRequest.newBuilder()
+                                            .setAckDeadlineSeconds(ackDeadlineSecondsIncrement)
+                                            .setSubscription(subName)
+                                            .addAllAckIds(ackIds)
+                                            .build()
+                            );
+                }
+                if (DEBUG) {
+                    for (String i : toModAck) {
+                        System.out.println(
+                                "ModAck for message_id " + acksToMids.get(i) + " with ackId ..."
+                                        + i.substring(i.length() - 12, i.length() - 1));
                     }
                 }
             }
@@ -172,7 +173,11 @@ public class SubSyncWithCallbacks{
                 // the maximum batch size is 1000 ackIds, so in case we end up with more than
                 // a 1000 to send, we must break up the set
                 for (List<String> ackIds : Iterables.partition(localAckList, 1000)) {
-                    subscriber.acknowledgeCallable().call(ackRequestBuilder.addAllAckIds(ackIds).build());
+                    subscriber.acknowledgeCallable().call(
+                                    AcknowledgeRequest.newBuilder()
+                                            .setSubscription(subName)
+                                            .addAllAckIds(ackIds)
+                                            .build());
                     toAck.removeAll(ackIds);
                     // it is now safe to stop extending ackDeadlines for the acked messages
                     toModAck.removeAll(ackIds);
