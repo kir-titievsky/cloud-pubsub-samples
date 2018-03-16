@@ -118,10 +118,12 @@ public class SubSyncWithCallbacks{
                             .setSubscription(subName)
                             .setMaxMessages(numThreads - toModAck.size()).build()
             );
+            for ()
             for (ReceivedMessage message : pullResponse.getReceivedMessagesList()) {
                 // we keep track of message processing in an array message id
                 ListenableFuture<String> future =
                         workerPool.submit(new MessageHandler(message.getMessage(), timeoutMilliseconds));
+                future.
                 final String ackId = message.getAckId();
                 toModAck.add(ackId);
                 acksToMids.put(ackId,message.getMessage().getMessageId());
